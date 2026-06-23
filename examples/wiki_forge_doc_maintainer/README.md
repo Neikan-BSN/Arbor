@@ -109,3 +109,5 @@ Stop and ask the operator before:
 
 The verifier's process exit code is not the result. Parse `verdict=...` from
 the output and follow `verifier_checklist.md`.
+
+Dual-CLI tandem usage example: from the Arbor checkout, run `uv run arbor tandem run --target-repo <wiki-forge-repo> --producer-cli claude --reviewer-cli codex --dry-run "$(cat examples/wiki_forge_doc_maintainer/task.local.md)"` to execute producer, additive gate, independent reviewer, and the default propose-only draft-PR step; pass `--open-pr` only after the operator explicitly approves the GitHub mutation.
