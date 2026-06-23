@@ -1,0 +1,12 @@
+{
+  "proposal_id": "fp-08855c115a61",
+  "gap_id": "gap-10b1bbc89baa",
+  "surface_key": "wiki-forge-readme",
+  "target_file": "README.md",
+  "gap_type": "missing_section",
+  "priority": "MEDIUM",
+  "anchor_kind": "end_of_file",
+  "anchor_text": "",
+  "insertion": "## Semantic Versioning and Release Channels\n\nwiki-forge follows strict Semantic Versioning (SemVer 2.0.0). Every pipeline\nrun is tagged against a release channel -- `stable`, `beta`, or `nightly` --\nand the `wiki-forge release` command promotes a build across channels with an\nautomated changelog and a signed version manifest. Breaking changes to node\nschemas bump the MAJOR version and trigger the deprecation-window policy.\n",
+  "rationale": "Documents the project's versioning and release-channel regime so contributors know how builds are promoted."
+}
