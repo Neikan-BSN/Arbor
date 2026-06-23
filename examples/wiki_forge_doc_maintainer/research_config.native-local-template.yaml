@@ -1,0 +1,39 @@
+# Native Arbor template for the wiki-forge doc-maintainer run.
+#
+# This file is intentionally named *template* so Arbor will not auto-load it
+# from the Arbor checkout. Copy it into the target wiki-forge repo as
+# `research_config.yaml` only after editing the local model endpoint.
+#
+# Do not use provider: auto for this run package. A Claude-like model name plus
+# auto provider can resolve to a hosted Anthropic client.
+
+llm:
+  provider: litellm
+  model: local/wiki-forge-doc-maintainer
+  api_key: dummy
+  base_url: http://127.0.0.1:11434/v1
+  reasoning_effort: medium
+  reasoning_summary: auto
+  text_verbosity: medium
+  llm_timeout: 300
+
+max_cycles: 180
+executor_max_turns: 80
+
+timeout:
+  executor: 172800
+  eval: 86400
+  run_training_max: 86400
+  run_training_stall: 1800
+  heartbeat_interval: 30
+
+ui:
+  interaction_mode: review
+  webui_port: 8765
+
+coordinator:
+  max_depth: 3
+  merge_threshold: 0.0
+
+executor:
+  max_turns: 80
