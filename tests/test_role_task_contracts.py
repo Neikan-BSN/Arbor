@@ -97,6 +97,43 @@ def test_unknown_reviewer_schema_version_is_rejected_not_misread() -> None:
     assert verdict.reason_code == "unsupported-schema-version"
 
 
+def test_absent_reviewer_verdict_fails_closed() -> None:
+    verdict = parse_reviewer_verdict(None)
+
+    assert verdict.verdict == "blocked"
+    assert verdict.reason_code == "verdict-absent"
+
+
+def test_unknown_reviewer_verdict_string_fails_closed() -> None:
+    verdict = parse_reviewer_verdict({"schema_version": 1, "verdict": "maybe"})
+
+    assert verdict.verdict == "blocked"
+    assert verdict.reason_code == "verdict-unknown"
+
+
+def test_pass_with_blocking_findings_fails_closed() -> None:
+    verdict = parse_reviewer_verdict(
+        {"schema_version": 1, "verdict": "pass", "blocking_findings": ["x"]}
+    )
+
+    assert verdict.verdict == "blocked"
+    assert verdict.reason_code == "verdict-contradictory"
+
+
+def test_malformed_yaml_reviewer_verdict_fails_closed() -> None:
+    verdict = parse_reviewer_verdict("schema_version: 1\nverdict: [")
+
+    assert verdict.verdict == "blocked"
+    assert verdict.reason_code == "verdict-unparseable"
+
+
+def test_scalar_reviewer_verdict_payload_fails_closed() -> None:
+    verdict = parse_reviewer_verdict("verdict")
+
+    assert verdict.verdict == "blocked"
+    assert verdict.reason_code == "verdict-not-object"
+
+
 def test_producer_artifact_missing_proposal_id_is_not_readable(tmp_path: Path) -> None:
     artifact = _write_producer_artifact(tmp_path / "fp-missing.json")
     payload = json.loads(artifact.read_text(encoding="utf-8"))

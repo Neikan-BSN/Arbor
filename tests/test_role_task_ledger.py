@@ -26,6 +26,12 @@ def _proposal(path: Path, proposal_id: str = "fp-ledger") -> Path:
     return path
 
 
+def _patched(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("patched content", encoding="utf-8")
+    return path
+
+
 def test_role_task_ledger_round_trips_and_leaves_no_temp_file(tmp_path: Path) -> None:
     artifact = _proposal(tmp_path / "docs" / "maintainer-dogfood" / "proposals" / "fp.json")
     ledger = RoleTaskLedger(
@@ -37,6 +43,9 @@ def test_role_task_ledger_round_trips_and_leaves_no_temp_file(tmp_path: Path) ->
                 status="ready",
                 result_artifact_path=str(artifact),
                 verdict="pass",
+                gated_content_hash="hash",
+                gated_target_relpath="README.md",
+                gated_patched_path=str(_patched(tmp_path / "patched" / "fp.patch")),
             )
         }
     )
@@ -46,7 +55,7 @@ def test_role_task_ledger_round_trips_and_leaves_no_temp_file(tmp_path: Path) ->
 
     assert loaded.tasks["producer-0"].status == "ready"
     assert loaded.tasks["producer-0"].result_artifact_path == str(artifact)
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["docs", "role_tasks.json"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["docs", "patched", "role_tasks.json"]
 
 
 def test_task_with_existing_artifact_is_complete_and_not_reinvoked(tmp_path: Path) -> None:
@@ -77,12 +86,18 @@ def test_ready_without_pr_plans_one_pr_then_none_after_pr_url(tmp_path: Path) ->
         status="ready",
         result_artifact_path=str(artifact),
         verdict="pass",
+        gated_content_hash="hash",
+        gated_target_relpath="README.md",
+        gated_patched_path=str(_patched(tmp_path / "patched" / "fp-ready.patch")),
     )
     ledger = put_role_task_record(tmp_path, "producer-0", record)
 
     planned = plan_pr_creations(ledger)
     assert len(planned) == 1
     assert planned[0].branch == "maintainer/fix-fp-ready"
+    assert planned[0].gated_content_hash == "hash"
+    assert planned[0].gated_target_relpath == "README.md"
+    assert planned[0].gated_patched_path == tmp_path / "patched" / "fp-ready.patch"
 
     ledger = put_role_task_record(
         tmp_path,
@@ -101,6 +116,9 @@ def test_duplicate_ready_records_plan_one_pr_per_branch(tmp_path: Path) -> None:
         status="ready",
         result_artifact_path=str(artifact),
         verdict="pass",
+        gated_content_hash="hash",
+        gated_target_relpath="README.md",
+        gated_patched_path=str(_patched(tmp_path / "patched" / "fp-dupe.patch")),
     )
 
     put_role_task_record(tmp_path, "producer-0", record)
@@ -118,3 +136,7 @@ def test_unknown_schema_version_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(UnsupportedRoleTaskLedgerVersion):
         read_role_task_ledger(tmp_path)
+
+
+def test_current_role_task_ledger_schema_version_is_two() -> None:
+    assert ROLE_TASK_LEDGER_SCHEMA_VERSION == 2

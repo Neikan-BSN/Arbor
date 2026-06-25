@@ -7,4 +7,5 @@ __all__ = [
     "config",
     "paid_guard",
     "preflight",
+    "worktree",
 ]

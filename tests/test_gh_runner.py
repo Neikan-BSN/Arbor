@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
+import shutil
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
+import pytest
 from arbor.tandem.gh_runner import OPERATOR_DISCLOSURE, open_ready_draft_pr
 from arbor.tandem.ledger import RoleTaskRecord, put_role_task_record, read_role_task_ledger
+from arbor.tandem.worktree import GitWorktree
 
 
 def _artifact(path: Path, proposal_id: str = "fp-123") -> Path:
@@ -31,7 +36,18 @@ def _artifact(path: Path, proposal_id: str = "fp-123") -> Path:
     return path
 
 
-def _ready_ledger(session_dir: Path, artifact: Path, proposal_id: str = "fp-123") -> None:
+def _ready_ledger(
+    session_dir: Path,
+    artifact: Path,
+    proposal_id: str = "fp-123",
+    *,
+    target_relpath: str = "README.md",
+    patched_content: str = "Base\nNew docs\n",
+    content_hash: str | None = None,
+) -> Path:
+    patched_path = session_dir / "patched" / f"{proposal_id}.patch"
+    patched_path.parent.mkdir(parents=True, exist_ok=True)
+    patched_path.write_text(patched_content, encoding="utf-8")
     put_role_task_record(
         session_dir,
         "producer-0",
@@ -42,14 +58,21 @@ def _ready_ledger(session_dir: Path, artifact: Path, proposal_id: str = "fp-123"
             status="ready",
             result_artifact_path=str(artifact),
             verdict="pass",
+            gated_content_hash=content_hash
+            or hashlib.sha256(patched_content.encode("utf-8")).hexdigest(),
+            gated_target_relpath=target_relpath,
+            gated_patched_path=str(patched_path),
         ),
     )
+    return patched_path
 
 
 class FakeRunner:
     def __init__(self, responses: list[subprocess.CompletedProcess[str]]) -> None:
         self.responses = responses
         self.calls: list[list[str]] = []
+        self.cwd_calls: list[str | None] = []
+        self.added_content: str | None = None
 
     def __call__(
         self,
@@ -62,6 +85,9 @@ class FakeRunner:
         env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(args))
+        self.cwd_calls.append(cwd)
+        if list(args)[:3] == ["git", "add", "--"] and cwd is not None:
+            self.added_content = (Path(cwd) / args[-1]).read_text(encoding="utf-8")
         if not self.responses:
             raise AssertionError(f"unexpected subprocess call: {list(args)}")
         return self.responses.pop(0)
@@ -69,6 +95,20 @@ class FakeRunner:
 
 def _completed(args: list[str] | None = None, code: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args or [], code, stdout=stdout, stderr=stderr)
+
+
+@contextmanager
+def _fake_worktree(target_repo_root: Path, worktree: Path) -> Iterator[GitWorktree]:
+    worktree.mkdir(parents=True)
+    (worktree / "README.md").write_text("Base\n", encoding="utf-8")
+    try:
+        yield GitWorktree(
+            path=worktree,
+            branch="maintainer/fix-fp-123",
+            base_ref="main",
+        )
+    finally:
+        shutil.rmtree(worktree, ignore_errors=True)
 
 
 def test_dry_run_default_reports_would_open_without_gh_mutation(tmp_path: Path) -> None:
@@ -91,21 +131,35 @@ def test_dry_run_default_reports_would_open_without_gh_mutation(tmp_path: Path) 
     assert result.dry_run
     assert result.branch == "maintainer/fix-fp-123"
     assert result.title == "docs: apply maintainer proposal fp-123"
+    assert "README.md" in result.detail
+    assert "14 bytes" in result.detail
     assert result.body is not None
     assert OPERATOR_DISCLOSURE in result.body
     assert runner.calls == []
 
 
-def test_enabled_opens_exactly_one_draft_pr_with_operator_disclosure(tmp_path: Path) -> None:
+def test_enabled_applies_gated_content_in_worktree_branch_before_draft_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session_dir = tmp_path / "session"
     target = tmp_path / "repo"
     target.mkdir()
+    (target / "README.md").write_text("RAW HEAD\n", encoding="utf-8")
     artifact = _artifact(target / "docs" / "maintainer-dogfood" / "proposals" / "fp-123.json")
-    _ready_ledger(session_dir, artifact)
+    patched = "Base\nNew docs\n"
+    _ready_ledger(session_dir, artifact, patched_content=patched)
+    worktree = tmp_path / "isolated-worktree"
+    monkeypatch.setattr(
+        "arbor.tandem.gh_runner.git_worktree",
+        lambda *args, **kwargs: _fake_worktree(target, worktree),
+    )
     runner = FakeRunner(
         [
             _completed(stdout=""),
             _completed(code=1, stderr="Not Found (HTTP 404)"),
+            _completed(stdout="added"),
+            _completed(stdout="committed"),
             _completed(stdout="pushed"),
             _completed(stdout="https://github.example/wiki-forge/pull/7\n"),
         ]
@@ -125,15 +179,41 @@ def test_enabled_opens_exactly_one_draft_pr_with_operator_disclosure(tmp_path: P
     assert [call[:3] for call in runner.calls] == [
         ["gh", "pr", "list"],
         ["gh", "api", "repos/:owner/:repo/git/ref/heads/maintainer/fix-fp-123"],
+        ["git", "add", "--"],
+        ["git", "commit", "-m"],
         ["git", "push", "origin"],
         ["gh", "pr", "create"],
     ]
+    assert runner.added_content == patched
+    assert (target / "README.md").read_text(encoding="utf-8") == "RAW HEAD\n"
+    assert not worktree.exists()
     create_call = runner.calls[-1]
     assert "--draft" in create_call
     assert all(call[:3] != ["gh", "pr", "merge"] for call in runner.calls)
     body = create_call[create_call.index("--body") + 1]
     assert f"Disclosure: {OPERATOR_DISCLOSURE}." in body
     assert read_role_task_ledger(session_dir).tasks["producer-0"].pr_url == result.pr_url
+
+
+def test_content_hash_mismatch_fails_closed_before_gh_calls(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session"
+    target = tmp_path / "repo"
+    target.mkdir()
+    artifact = _artifact(target / "docs" / "maintainer-dogfood" / "proposals" / "fp-123.json")
+    _ready_ledger(session_dir, artifact, content_hash="not-the-real-hash")
+    runner = FakeRunner([])
+
+    result = open_ready_draft_pr(
+        session_dir=session_dir,
+        target_repo_root=target,
+        gh_identity="Logged in to github.com as user01",
+        dry_run=False,
+        runner=runner,
+    )
+
+    assert not result.mutated
+    assert result.reason_code == "gated-content-divergence"
+    assert runner.calls == []
 
 
 def test_existing_pr_for_branch_opens_none_and_records_url(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import os
 import sys
 from dataclasses import dataclass
@@ -67,14 +68,22 @@ def gate(artifact_path: Path, target_repo_root: Path) -> GateOutcome:
             reason_code="anchor-unresolved",
         )
 
-    record, _patched = api.evaluate_proposal(original, proposal)
+    record, patched = api.evaluate_proposal(original, proposal)
     passed = record.verdict == api.GateVerdict.PASS
+    patched_content = patched if passed else None
     return GateOutcome(
         produced=True,
         passed=passed,
         proposal_id=proposal_id or None,
         detail=str(record.reason),
         reason_code="gate-pass" if passed else "gate-reject",
+        target_relpath=target_file if passed else None,
+        patched_content=patched_content,
+        content_hash=(
+            hashlib.sha256(patched_content.encode("utf-8")).hexdigest()
+            if patched_content is not None
+            else None
+        ),
     )
 
 

@@ -12,6 +12,7 @@ from typing import Mapping
 
 from ..cli.commands.local_cmd import build_command
 from ..core.agent import _scrub_secrets
+from .paid_guard import scrub_provider_env
 
 DEFAULT_TAIL_CHARS = 20_000
 DEFAULT_TIMEOUT_S = 3_600
@@ -114,6 +115,7 @@ def run_cli_worker(
             error=message,
         )
 
+    subprocess_env = scrub_provider_env(env)
     try:
         completed = subprocess.run(
             command,
@@ -122,7 +124,7 @@ def run_cli_worker(
             text=True,
             timeout=timeout_s,
             check=False,
-            env=dict(env),
+            env=subprocess_env,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = _scrubbed_tail(exc.stdout, tail_chars=tail_chars)

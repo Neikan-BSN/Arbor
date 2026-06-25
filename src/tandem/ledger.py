@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .contracts import read_producer_artifact
 
-ROLE_TASK_LEDGER_SCHEMA_VERSION = 1
+ROLE_TASK_LEDGER_SCHEMA_VERSION = 2
 ROLE_TASK_LEDGER_NAME = "role_tasks.json"
 RoleTaskStatus = Literal[
     "pending",
@@ -42,6 +42,10 @@ class RoleTaskRecord(BaseModel):
     result_artifact_path: str | None = None
     verdict: str | None = None
     pr_url: str | None = None
+    gated_content_hash: str | None = None
+    gated_target_relpath: str | None = None
+    gated_patched_path: str | None = None
+    isolation_warning: str | None = None
 
 
 class RoleTaskLedger(BaseModel):
@@ -78,6 +82,9 @@ class PlannedPr:
     proposal_id: str
     branch: str
     result_artifact_path: Path
+    gated_content_hash: str | None
+    gated_target_relpath: str | None
+    gated_patched_path: Path | None
 
 
 def role_task_ledger_path(session_dir: str | Path) -> Path:
@@ -185,7 +192,11 @@ def plan_pr_creations(ledger: RoleTaskLedger) -> list[PlannedPr]:
                 proposal_id=ref.proposal_id,
                 branch=branch,
                 result_artifact_path=ref.path,
+                gated_content_hash=record.gated_content_hash,
+                gated_target_relpath=record.gated_target_relpath,
+                gated_patched_path=(
+                    Path(record.gated_patched_path) if record.gated_patched_path else None
+                ),
             )
         )
     return planned
-

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from .ledger import (
     put_role_task_record,
     read_role_task_ledger,
 )
+from .worktree import WorktreeError, git_worktree
 
 OPERATOR_DISCLOSURE = "operator-owned; bot credential not configured"
 
@@ -93,6 +95,15 @@ def open_ready_draft_pr(
     title = _draft_title(plan)
     body = _draft_body(plan, gh_identity=gh_identity)
     disclosure = _disclosure_for_identity(gh_identity)
+    gated_content = _read_verified_gated_content(
+        plan,
+        dry_run=dry_run,
+        disclosure=disclosure,
+        title=title,
+        body=body,
+    )
+    if isinstance(gated_content, DraftPrResult):
+        return gated_content
 
     if dry_run:
         return DraftPrResult(
@@ -102,7 +113,11 @@ def open_ready_draft_pr(
             pr_url=None,
             dry_run=True,
             disclosure=disclosure,
-            detail="dry-run: would push branch and open one draft PR",
+            detail=(
+                "dry-run: would apply gated content to "
+                f"{plan.gated_target_relpath} on branch {plan.branch} "
+                f"({len(gated_content.encode('utf-8'))} bytes) and open one draft PR"
+            ),
             title=title,
             body=body,
         )
@@ -154,18 +169,20 @@ def open_ready_draft_pr(
             reason_code="branch-exists",
         )
 
-    push = _run(
-        ["git", "push", "origin", f"HEAD:refs/heads/{plan.branch}"],
+    apply_result = _apply_gated_content_branch(
+        plan=plan,
+        patched_content=gated_content,
         target_repo_root=target_repo_root,
+        base_branch=base_branch,
         runner=run,
         env=env,
     )
-    if push.returncode != 0:
+    if apply_result is not None:
         return _failure(
             plan,
             dry_run=dry_run,
             disclosure=disclosure,
-            detail=f"git push failed: {_combined_output(push)}",
+            detail=apply_result,
         )
 
     create = _run(
@@ -222,6 +239,118 @@ class _BranchCheck:
     returncode: int
     exists: bool
     detail: str
+
+
+def _read_verified_gated_content(
+    plan: PlannedPr,
+    *,
+    dry_run: bool,
+    disclosure: str | None,
+    title: str,
+    body: str,
+) -> str | DraftPrResult:
+    if not plan.gated_patched_path or not plan.gated_content_hash or not plan.gated_target_relpath:
+        return DraftPrResult(
+            planned=False,
+            mutated=False,
+            branch=plan.branch,
+            pr_url=None,
+            dry_run=dry_run,
+            disclosure=disclosure,
+            detail="ready proposal is missing gated content metadata; no PR opened",
+            title=title,
+            body=body,
+            reason_code="gated-content-missing",
+        )
+    try:
+        patched_content = plan.gated_patched_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return DraftPrResult(
+            planned=False,
+            mutated=False,
+            branch=plan.branch,
+            pr_url=None,
+            dry_run=dry_run,
+            disclosure=disclosure,
+            detail=f"gated patched content is unreadable: {exc}",
+            title=title,
+            body=body,
+            reason_code="gated-content-missing",
+        )
+    content_hash = hashlib.sha256(patched_content.encode("utf-8")).hexdigest()
+    if content_hash != plan.gated_content_hash:
+        return DraftPrResult(
+            planned=False,
+            mutated=False,
+            branch=plan.branch,
+            pr_url=None,
+            dry_run=dry_run,
+            disclosure=disclosure,
+            detail="gated patched content hash diverged before PR creation",
+            title=title,
+            body=body,
+            reason_code="gated-content-divergence",
+        )
+    return patched_content
+
+
+def _apply_gated_content_branch(
+    *,
+    plan: PlannedPr,
+    patched_content: str,
+    target_repo_root: Path,
+    base_branch: str,
+    runner: SubprocessRunner,
+    env: Mapping[str, str] | None,
+) -> str | None:
+    relpath = _safe_repo_relpath(plan.gated_target_relpath or "")
+    if relpath is None:
+        return f"gated target path is not a safe repo-relative path: {plan.gated_target_relpath!r}"
+    try:
+        with git_worktree(
+            target_repo_root,
+            base_ref=base_branch,
+            branch=plan.branch,
+            runner=runner,
+            env=env,
+        ) as worktree:
+            target = worktree.path / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(patched_content, encoding="utf-8")
+            add = _run_in_cwd(
+                ["git", "add", "--", str(relpath)],
+                cwd=worktree.path,
+                runner=runner,
+                env=env,
+            )
+            if add.returncode != 0:
+                return f"git add failed: {_combined_output(add)}"
+            commit = _run_in_cwd(
+                ["git", "commit", "-m", f"docs: apply tandem proposal {plan.proposal_id}"],
+                cwd=worktree.path,
+                runner=runner,
+                env=env,
+            )
+            if commit.returncode != 0:
+                return f"git commit failed: {_combined_output(commit)}"
+            push = _run_in_cwd(
+                ["git", "push", "origin", plan.branch],
+                cwd=worktree.path,
+                runner=runner,
+                env=env,
+            )
+            if push.returncode != 0:
+                return f"git push failed: {_combined_output(push)}"
+    except (OSError, WorktreeError) as exc:
+        return f"git worktree apply failed: {exc}"
+    return None
+
+
+def _safe_repo_relpath(value: str) -> Path | None:
+    relpath = Path(value)
+    if not value or relpath.is_absolute() or any(part == ".." for part in relpath.parts):
+        return None
+    return relpath
 
 
 def _select_plans(ledger: object, *, proposal_id: str | None) -> list[PlannedPr]:
@@ -337,6 +466,23 @@ def _run(
     )
 
 
+def _run_in_cwd(
+    args: Sequence[str],
+    *,
+    cwd: Path,
+    runner: SubprocessRunner,
+    env: Mapping[str, str] | None,
+) -> subprocess.CompletedProcess[str]:
+    return runner(
+        list(args),
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(env) if env is not None else None,
+    )
+
+
 def _failure(
     plan: PlannedPr,
     *,
@@ -366,6 +512,8 @@ def _draft_body(plan: PlannedPr, *, gh_identity: str) -> str:
         "",
         f"Proposal: `{plan.proposal_id}`",
         f"Artifact: `{plan.result_artifact_path}`",
+        f"Gated target: `{plan.gated_target_relpath}`",
+        f"Gated content sha256: `{plan.gated_content_hash}`",
         f"Branch: `{plan.branch}`",
         f"GitHub auth identity: {_identity_summary(gh_identity)}",
         "",

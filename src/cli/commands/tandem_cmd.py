@@ -93,6 +93,7 @@ def execute_tandem_run(
     gate: Gate | None = None,
     gate_adapter_path: Path | None = None,
     dry_run: bool = True,
+    base_branch: str = "main",
     env: Mapping[str, str] | None = None,
     worker: CliWorker = run_cli_worker,
     preflight_runner: PreflightRunner = run_tandem_preflight,
@@ -139,6 +140,7 @@ def execute_tandem_run(
         worker=worker,
         preflight_runner=cached_preflight,
         invocation_cap=invocation_cap,
+        base_ref=base_branch,
     )
 
     pr_result: DraftPrResult | None = None
@@ -149,6 +151,7 @@ def execute_tandem_run(
             gh_identity=preflight.gh_identity or "gh identity unavailable",
             proposal_id=driver.proposal_id,
             dry_run=dry_run,
+            base_branch=base_branch,
             runner=subprocess_runner,
             env=run_env,
         )
@@ -214,6 +217,11 @@ def run_command(
         "--dry-run/--open-pr",
         help="Default dry-run reports the draft PR; --open-pr pushes and opens it.",
     ),
+    base_branch: str = typer.Option(
+        "main",
+        "--base-branch",
+        help="Base branch/ref for reviewer isolation and draft PR creation.",
+    ),
 ) -> None:
     """Run the tandem workflow and plan or open one draft docs PR."""
 
@@ -235,6 +243,7 @@ def run_command(
             base_url=base_url,
             gate_adapter_path=gate_adapter,
             dry_run=dry_run,
+            base_branch=base_branch,
         )
     except Exception as exc:
         typer.secho(f"tandem run failed: {exc}", fg=typer.colors.RED, err=True)

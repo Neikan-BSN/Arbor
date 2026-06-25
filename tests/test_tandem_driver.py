@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Mapping
@@ -11,6 +12,7 @@ from arbor.tandem.cli_worker import CliRunResult
 from arbor.tandem.config import TandemConfig
 from arbor.tandem.driver import run_tandem_driver
 from arbor.tandem.gate import GateOutcome
+from arbor.tandem.ledger import RoleTaskRecord, put_role_task_record
 from arbor.tandem.preflight import (
     TandemCliIdentity,
     TandemPreflightResult,
@@ -118,6 +120,18 @@ def _result(cli: str, stdout: str = "ok") -> CliRunResult:
     )
 
 
+def _gate_pass(proposal_id: str = "fp-0", patched_content: str = "Base\ncontent\n") -> GateOutcome:
+    return GateOutcome(
+        produced=True,
+        passed=True,
+        proposal_id=proposal_id,
+        detail="gate pass",
+        target_relpath="README.md",
+        patched_content=patched_content,
+        content_hash=hashlib.sha256(patched_content.encode("utf-8")).hexdigest(),
+    )
+
+
 def test_driver_happy_path_marks_ready_with_zero_provider_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -126,6 +140,7 @@ def test_driver_happy_path_marks_ready_with_zero_provider_calls(
     monkeypatch.setattr("arbor.core.create_provider", lambda *args, **kwargs: provider_calls.append(args))
     target = tmp_path / "repo"
     target.mkdir()
+    (target / "scratch.txt").write_text("producer scratch state", encoding="utf-8")
     calls: list[dict[str, object]] = []
 
     def worker(**kwargs) -> CliRunResult:
@@ -134,14 +149,19 @@ def test_driver_happy_path_marks_ready_with_zero_provider_calls(
             _write_artifact(target, "fp-0")
             return _result("claude", stdout="producer trace must stay private")
         assert kwargs["cli"] == "codex"
+        reviewer_cwd = kwargs["cwd"]
+        assert isinstance(reviewer_cwd, Path)
+        assert reviewer_cwd != target
+        assert not (reviewer_cwd / "scratch.txt").exists()
         assert "producer trace" not in str(kwargs["task"])
         assert "scratch" not in str(kwargs["task"])
         assert "Gated artifact:" in str(kwargs["task"])
+        assert str(reviewer_cwd) in str(kwargs["task"])
         return _result("codex", stdout=_pass_verdict())
 
     def gate(path: Path, root: Path) -> GateOutcome:
         assert root == target
-        return GateOutcome(produced=True, passed=True, proposal_id="fp-0", detail="gate pass")
+        return _gate_pass("fp-0")
 
     result = run_tandem_driver(
         _config(),
@@ -182,7 +202,7 @@ def test_gate_reject_reenters_producer_before_review(tmp_path: Path) -> None:
         gate_calls += 1
         if gate_calls == 1:
             return GateOutcome(produced=True, passed=False, proposal_id="fp-0", detail="not insert-only")
-        return GateOutcome(produced=True, passed=True, proposal_id="fp-1", detail="gate pass")
+        return _gate_pass("fp-1")
 
     result = run_tandem_driver(
         _config(repair_budget=1),
@@ -222,11 +242,8 @@ def test_reviewer_repair_changing_artifact_exhausts_budget(tmp_path: Path) -> No
         target_repo_root=target,
         skills_src=_skills(tmp_path),
         task="produce docs proposal",
-        gate=lambda path, root: GateOutcome(
-            produced=True,
-            passed=True,
-            proposal_id=json.loads(path.read_text(encoding="utf-8"))["proposal_id"],
-            detail="gate pass",
+        gate=lambda path, root: _gate_pass(
+            json.loads(path.read_text(encoding="utf-8"))["proposal_id"]
         ),
         env={},
         worker=worker,
@@ -266,7 +283,7 @@ def test_reviewer_repair_reproducing_artifact_stops_oscillating(tmp_path: Path) 
         target_repo_root=target,
         skills_src=_skills(tmp_path),
         task="produce docs proposal",
-        gate=lambda path, root: GateOutcome(produced=True, passed=True, proposal_id="fp", detail="gate pass"),
+        gate=lambda path, root: _gate_pass("fp"),
         env={},
         worker=worker,
         preflight_runner=_preflight_ok,
@@ -298,7 +315,7 @@ def test_repair_regressing_gate_is_recorded_as_gate_reject(tmp_path: Path) -> No
         gate_count += 1
         if gate_count == 2:
             return GateOutcome(produced=True, passed=False, proposal_id="fp-1", detail="gate reject after repair")
-        return GateOutcome(produced=True, passed=True, proposal_id="fp-0", detail="gate pass")
+        return _gate_pass("fp-0")
 
     result = run_tandem_driver(
         _config(repair_budget=1),
@@ -348,7 +365,7 @@ def test_preflight_fail_writes_stop_record_and_invokes_no_worker(tmp_path: Path)
         target_repo_root=target,
         skills_src=_skills(tmp_path),
         task="produce docs proposal",
-        gate=lambda path, root: GateOutcome(produced=True, passed=True, proposal_id="fp", detail="pass"),
+        gate=lambda path, root: _gate_pass("fp"),
         env={},
         worker=worker,
         preflight_runner=preflight_fail,
@@ -359,3 +376,154 @@ def test_preflight_fail_writes_stop_record_and_invokes_no_worker(tmp_path: Path)
     assert result.stop_record.reason_code == "paid-resolution"
     assert result.ledger.tasks["preflight"].status == "stopped"
     assert calls == []
+
+
+def test_noop_producer_does_not_reuse_stale_single_artifact(tmp_path: Path) -> None:
+    target = tmp_path / "repo"
+    target.mkdir()
+    _write_artifact(target, "fp-stale")
+
+    def worker(**kwargs) -> CliRunResult:
+        assert kwargs["cli"] == "claude"
+        return _result("claude")
+
+    result = run_tandem_driver(
+        _config(repair_budget=0),
+        session_dir=tmp_path / "session",
+        target_repo_root=target,
+        skills_src=_skills(tmp_path),
+        task="produce docs proposal",
+        gate=lambda path, root: _gate_pass("fp-stale"),
+        env={},
+        worker=worker,
+        preflight_runner=_preflight_ok,
+    )
+
+    assert result.status == "stopped"
+    assert result.stop_record is not None
+    assert result.stop_record.reason_code == "artifact-missing"
+    assert result.cycle_history[0].outcome == "not-produced"
+
+
+def test_resume_reuses_existing_producer_artifact_without_invoking_producer(tmp_path: Path) -> None:
+    target = tmp_path / "repo"
+    target.mkdir()
+    artifact = _write_artifact(target, "fp-resume")
+    session_dir = tmp_path / "session"
+    put_role_task_record(
+        session_dir,
+        "producer-0",
+        RoleTaskRecord(
+            role="producer",
+            resolved_cli="claude",
+            inputs_hash="hash",
+            status="produced",
+            result_artifact_path=str(artifact),
+        ),
+    )
+    calls: list[str] = []
+
+    def worker(**kwargs) -> CliRunResult:
+        calls.append(str(kwargs["cli"]))
+        if kwargs["cli"] == "claude":
+            raise AssertionError("producer should not be invoked on resume")
+        return _result("codex", stdout=_pass_verdict())
+
+    result = run_tandem_driver(
+        _config(),
+        session_dir=session_dir,
+        target_repo_root=target,
+        skills_src=_skills(tmp_path),
+        task="produce docs proposal",
+        gate=lambda path, root: _gate_pass("fp-resume"),
+        env={},
+        worker=worker,
+        preflight_runner=_preflight_ok,
+    )
+
+    assert result.status == "ready"
+    assert calls == ["codex"]
+
+
+def test_resume_reuses_existing_reviewer_verdict_without_invoking_reviewer(tmp_path: Path) -> None:
+    target = tmp_path / "repo"
+    target.mkdir()
+    artifact = _write_artifact(target, "fp-resume")
+    session_dir = tmp_path / "session"
+    verdict = session_dir / "reviewer-0-verdict.yaml"
+    verdict.parent.mkdir(parents=True)
+    verdict.write_text(_pass_verdict(), encoding="utf-8")
+    put_role_task_record(
+        session_dir,
+        "producer-0",
+        RoleTaskRecord(
+            role="producer",
+            resolved_cli="claude",
+            inputs_hash="hash",
+            status="gated",
+            result_artifact_path=str(artifact),
+            gated_content_hash=_gate_pass("fp-resume").content_hash,
+            gated_target_relpath="README.md",
+            gated_patched_path=str(session_dir / "patched" / "fp-resume.patch"),
+        ),
+    )
+    put_role_task_record(
+        session_dir,
+        "reviewer-0",
+        RoleTaskRecord(
+            role="reviewer",
+            resolved_cli="codex",
+            inputs_hash="hash",
+            status="reviewed",
+            result_artifact_path=str(verdict),
+            verdict="pass",
+        ),
+    )
+    calls: list[str] = []
+
+    def worker(**kwargs) -> CliRunResult:
+        calls.append(str(kwargs["cli"]))
+        raise AssertionError("workers should not be invoked on resume")
+
+    result = run_tandem_driver(
+        _config(),
+        session_dir=session_dir,
+        target_repo_root=target,
+        skills_src=_skills(tmp_path),
+        task="produce docs proposal",
+        gate=lambda path, root: _gate_pass("fp-resume"),
+        env={},
+        worker=worker,
+        preflight_runner=_preflight_ok,
+    )
+
+    assert result.status == "ready"
+    assert calls == []
+
+
+def test_invocation_cap_stops_after_gate_pass_before_reviewer(tmp_path: Path) -> None:
+    target = tmp_path / "repo"
+    target.mkdir()
+
+    def worker(**kwargs) -> CliRunResult:
+        if kwargs["cli"] == "claude":
+            _write_artifact(target, "fp-cap")
+            return _result("claude")
+        raise AssertionError("reviewer should not run after invocation cap")
+
+    result = run_tandem_driver(
+        _config(),
+        session_dir=tmp_path / "session",
+        target_repo_root=target,
+        skills_src=_skills(tmp_path),
+        task="produce docs proposal",
+        gate=lambda path, root: _gate_pass("fp-cap"),
+        env={},
+        worker=worker,
+        preflight_runner=_preflight_ok,
+        invocation_cap=1,
+    )
+
+    assert result.status == "stopped"
+    assert result.stop_record is not None
+    assert result.stop_record.reason_code == "invocation-cap-exceeded"

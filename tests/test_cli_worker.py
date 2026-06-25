@@ -67,6 +67,39 @@ def test_cli_worker_keeps_nonzero_output_for_driver_decision(
     assert result.stderr == "warn\n"
 
 
+def test_cli_worker_scrubs_provider_credentials_from_subprocess_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured_env = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs["env"])
+        return subprocess.CompletedProcess(args[0], 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("arbor.tandem.cli_worker.shutil.which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr("arbor.tandem.cli_worker.subprocess.run", fake_run)
+
+    result = run_cli_worker(
+        cli="claude",
+        cwd=tmp_path,
+        skills_src=_skills_root(tmp_path),
+        task="do work",
+        env={
+            "ANTHROPIC_API_KEY": "secret",
+            "ANTHROPIC_AUTH_TOKEN": "secret",
+            "OPENAI_API_KEY": "secret",
+            "SAFE_ENV": "kept",
+        },
+    )
+
+    assert result.ok
+    assert "ANTHROPIC_API_KEY" not in captured_env
+    assert "ANTHROPIC_AUTH_TOKEN" not in captured_env
+    assert "OPENAI_API_KEY" not in captured_env
+    assert captured_env["SAFE_ENV"] == "kept"
+
+
 def test_cli_worker_bounds_and_scrubs_captured_tail(
     tmp_path: Path,
     monkeypatch,

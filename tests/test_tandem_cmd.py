@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -96,6 +97,18 @@ repair_hints: []
 """
 
 
+def _gate_pass(proposal_id: str = "fp-cmd", patched_content: str = "Base\nNew docs\n") -> GateOutcome:
+    return GateOutcome(
+        produced=True,
+        passed=True,
+        proposal_id=proposal_id,
+        detail="gate pass",
+        target_relpath="README.md",
+        patched_content=patched_content,
+        content_hash=hashlib.sha256(patched_content.encode("utf-8")).hexdigest(),
+    )
+
+
 def _blocked_verdict() -> str:
     return """
 schema_version: 1
@@ -133,7 +146,7 @@ def test_execute_tandem_run_happy_path_plans_one_dry_run_pr_without_provider_or_
     def gate(path: Path, root: Path) -> GateOutcome:
         gate_calls.append(path)
         assert root == target
-        return GateOutcome(produced=True, passed=True, proposal_id="fp-cmd", detail="gate pass")
+        return _gate_pass("fp-cmd")
 
     def gh_runner(*args, **kwargs) -> subprocess.CompletedProcess[str]:
         raise AssertionError("dry-run must not spawn gh or git")
@@ -181,7 +194,7 @@ def test_blocked_reviewer_stops_run_and_does_not_open_pr(tmp_path: Path) -> None
         target_repo_root=target,
         session_dir=tmp_path / "session",
         skills_src=_skills(tmp_path),
-        gate=lambda path, root: GateOutcome(produced=True, passed=True, proposal_id="fp-cmd", detail="gate pass"),
+        gate=lambda path, root: _gate_pass("fp-cmd"),
         dry_run=True,
         env={},
         worker=worker,
@@ -202,7 +215,15 @@ def test_load_gate_adapter_from_file_path(tmp_path: Path) -> None:
 from arbor.tandem.gate import GateOutcome
 
 def gate(artifact_path, target_repo_root):
-    return GateOutcome(produced=True, passed=True, proposal_id="fp-dynamic", detail="ok")
+    return GateOutcome(
+        produced=True,
+        passed=True,
+        proposal_id="fp-dynamic",
+        detail="ok",
+        target_relpath="README.md",
+        patched_content="patched",
+        content_hash="d7017ebcd65455e76e953d5b42fa96c3df28c7c3b616c7f069ed930fb4fae5fd",
+    )
 """,
         encoding="utf-8",
     )

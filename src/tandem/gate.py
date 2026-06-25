@@ -16,6 +16,9 @@ class GateOutcome:
     proposal_id: str | None
     detail: str
     reason_code: str | None = None
+    target_relpath: str | None = None
+    patched_content: str | None = None
+    content_hash: str | None = None
 
 
 class Gate(Protocol):
@@ -23,4 +26,3 @@ class Gate(Protocol):
 
     def __call__(self, artifact_path: Path, target_repo_root: Path) -> GateOutcome:
         """Validate ``artifact_path`` against ``target_repo_root``."""
-

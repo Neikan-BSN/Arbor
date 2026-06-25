@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal, Mapping, Protocol
+from typing import Iterator, Literal, Mapping, Protocol
 
 from .cli_worker import CliRunResult, run_cli_worker
 from .config import TandemConfig
@@ -29,6 +31,7 @@ from .ledger import (
 )
 from .paid_guard import scrub_provider_env
 from .preflight import TandemPreflightResult, run_tandem_preflight
+from .worktree import WorktreeError, git_worktree
 
 DEFAULT_INVOCATION_CAP = 8
 PROPOSAL_GLOB = "docs/maintainer-dogfood/proposals/*.json"
@@ -90,6 +93,24 @@ class StopRecord:
 
 
 @dataclass(frozen=True)
+class GatedContentPin:
+    """Durable content pinned by a passing generic gate."""
+
+    patched_path: Path
+    content_hash: str
+    target_relpath: str
+
+
+@dataclass(frozen=True)
+class ReviewerWorkspace:
+    """Isolated filesystem view handed to the reviewer role."""
+
+    cwd: Path
+    artifact_path: Path
+    warning: str | None = None
+
+
+@dataclass(frozen=True)
 class TandemDriverResult:
     """Final driver outcome."""
 
@@ -113,6 +134,7 @@ def run_tandem_driver(
     worker: CliWorker = run_cli_worker,
     preflight_runner: PreflightRunner = run_tandem_preflight,
     invocation_cap: int = DEFAULT_INVOCATION_CAP,
+    base_ref: str = "main",
 ) -> TandemDriverResult:
     """Run preflight -> produce -> gate -> review until ready or stopped."""
 
@@ -242,6 +264,7 @@ def run_tandem_driver(
                 resolved_cli=producer_cli,
                 phase="produce",
                 detail=detail,
+                stop_reason_code=artifact_ref.reason_code if artifact_ref is not None else None,
             )
             if decision is not None:
                 return decision
@@ -313,11 +336,40 @@ def run_tandem_driver(
             prior_repair_hints = [gate_outcome.detail]
             continue
 
+        pin = _pin_gated_content(
+            session_dir=session_dir,
+            proposal_id=proposal_id,
+            gate_outcome=gate_outcome,
+            history=history,
+            resolved_cli=producer_cli,
+        )
+        if isinstance(pin, StopRecord):
+            _write_stop_record(session_dir, pin)
+            put_role_task_record(
+                session_dir,
+                producer_task_id,
+                read_role_task_ledger(session_dir).tasks[producer_task_id].model_copy(
+                    update={"status": "stopped", "verdict": pin.reason_code}
+                ),
+            )
+            return TandemDriverResult(
+                status="stopped",
+                ledger=read_role_task_ledger(session_dir),
+                stop_record=pin,
+                cycle_history=history,
+            )
+
         put_role_task_record(
             session_dir,
             producer_task_id,
             read_role_task_ledger(session_dir).tasks[producer_task_id].model_copy(
-                update={"status": "gated", "verdict": gate_outcome.detail}
+                update={
+                    "status": "gated",
+                    "verdict": gate_outcome.detail,
+                    "gated_content_hash": pin.content_hash,
+                    "gated_target_relpath": pin.target_relpath,
+                    "gated_patched_path": str(pin.patched_path),
+                }
             ),
         )
 
@@ -346,13 +398,27 @@ def run_tandem_driver(
                 status="pending",
             )
             put_role_task_record(session_dir, reviewer_task_id, pending_review)
-            review_result = worker(
-                cli=reviewer_cli,
-                cwd=target_repo_root,
-                skills_src=skills_src,
-                task=_reviewer_task(task, artifact_path, prior_repair_hints),
-                env=worker_env,
-            )
+            isolation_warning: str | None = None
+            with _reviewer_workspace(
+                target_repo_root=target_repo_root,
+                artifact_path=artifact_path,
+                gated_target_relpath=pin.target_relpath,
+                base_ref=base_ref,
+            ) as workspace:
+                isolation_warning = workspace.warning
+                if isolation_warning is not None:
+                    put_role_task_record(
+                        session_dir,
+                        reviewer_task_id,
+                        pending_review.model_copy(update={"isolation_warning": isolation_warning}),
+                    )
+                review_result = worker(
+                    cli=reviewer_cli,
+                    cwd=workspace.cwd,
+                    skills_src=skills_src,
+                    task=_reviewer_task(task, workspace.artifact_path, prior_repair_hints),
+                    env=worker_env,
+                )
             invocations += max(1, review_result.invocations)
             _atomic_write_text(verdict_path, review_result.stdout)
             reviewer_verdict = parse_reviewer_verdict(review_result.stdout)
@@ -364,6 +430,7 @@ def run_tandem_driver(
                         "status": "reviewed",
                         "result_artifact_path": str(verdict_path),
                         "verdict": reviewer_verdict.verdict,
+                        "isolation_warning": isolation_warning,
                     }
                 ),
             )
@@ -385,7 +452,10 @@ def run_tandem_driver(
             )
 
         if reviewer_verdict.verdict == "repair":
-            detail = "; ".join(reviewer_verdict.repair_hints) or reviewer_verdict.detail
+            detail = _with_warning(
+                "; ".join(reviewer_verdict.repair_hints) or reviewer_verdict.detail,
+                read_role_task_ledger(session_dir).tasks[reviewer_task_id].isolation_warning,
+            )
             history.append(
                 CycleHistoryEvent(
                     cycle=cycle,
@@ -427,7 +497,10 @@ def run_tandem_driver(
                 phase="review",
                 outcome=f"review-{reviewer_verdict.verdict}",
                 proposal_id=proposal_id,
-                detail=reviewer_verdict.detail,
+                detail=_with_warning(
+                    reviewer_verdict.detail,
+                    read_role_task_ledger(session_dir).tasks[reviewer_task_id].isolation_warning,
+                ),
             )
         )
         put_role_task_record(
@@ -444,9 +517,173 @@ def run_tandem_driver(
             role="reviewer",
             resolved_cli=reviewer_cli,
             phase="review",
-            detail=reviewer_verdict.detail,
+            detail=_with_warning(
+                reviewer_verdict.detail,
+                read_role_task_ledger(session_dir).tasks[reviewer_task_id].isolation_warning,
+            ),
             task_id=reviewer_task_id,
         )
+
+
+def _pin_gated_content(
+    *,
+    session_dir: Path,
+    proposal_id: str | None,
+    gate_outcome: object,
+    history: list[CycleHistoryEvent],
+    resolved_cli: str | None,
+) -> GatedContentPin | StopRecord:
+    target_relpath = getattr(gate_outcome, "target_relpath", None)
+    patched_content = getattr(gate_outcome, "patched_content", None)
+    content_hash = getattr(gate_outcome, "content_hash", None)
+    if not isinstance(target_relpath, str) or not target_relpath.strip():
+        return _pin_failure(
+            history=history,
+            resolved_cli=resolved_cli,
+            detail="passing gate did not provide target_relpath",
+            reason_code="gated-content-missing",
+        )
+    if not isinstance(patched_content, str):
+        return _pin_failure(
+            history=history,
+            resolved_cli=resolved_cli,
+            detail="passing gate did not provide patched_content",
+            reason_code="gated-content-missing",
+        )
+    if not isinstance(content_hash, str) or not content_hash.strip():
+        return _pin_failure(
+            history=history,
+            resolved_cli=resolved_cli,
+            detail="passing gate did not provide content_hash",
+            reason_code="gated-content-missing",
+        )
+
+    computed_hash = hashlib.sha256(patched_content.encode("utf-8")).hexdigest()
+    if computed_hash != content_hash:
+        return _pin_failure(
+            history=history,
+            resolved_cli=resolved_cli,
+            detail="passing gate content_hash did not match patched_content",
+            reason_code="gated-content-divergence",
+        )
+
+    safe_id = _safe_filename(proposal_id or "unknown")
+    patched_path = session_dir / "patched" / f"{safe_id}.patch"
+    _atomic_write_text(patched_path, patched_content)
+    return GatedContentPin(
+        patched_path=patched_path,
+        content_hash=content_hash,
+        target_relpath=target_relpath,
+    )
+
+
+def _pin_failure(
+    *,
+    history: list[CycleHistoryEvent],
+    resolved_cli: str | None,
+    detail: str,
+    reason_code: str,
+) -> StopRecord:
+    return StopRecord(
+        reason_code=reason_code,
+        role="producer",
+        resolved_cli=resolved_cli,
+        phase="gate",
+        detail=detail,
+        cycle_history=list(history),
+    )
+
+
+@contextmanager
+def _reviewer_workspace(
+    *,
+    target_repo_root: Path,
+    artifact_path: Path,
+    gated_target_relpath: str | None,
+    base_ref: str,
+) -> Iterator[ReviewerWorkspace]:
+    used_git_worktree = False
+    try:
+        with git_worktree(target_repo_root, base_ref=base_ref) as worktree:
+            isolated_artifact = _copy_artifact_into_workspace(
+                artifact_path=artifact_path,
+                target_repo_root=target_repo_root,
+                workspace=worktree.path,
+            )
+            used_git_worktree = True
+            yield ReviewerWorkspace(cwd=worktree.path, artifact_path=isolated_artifact)
+            return
+    except (OSError, ValueError, WorktreeError) as exc:
+        if used_git_worktree:
+            raise
+        warning = f"reviewer-isolation-fallback: {exc}"
+
+    with tempfile.TemporaryDirectory(prefix="arbor-tandem-review-") as temp_name:
+        workspace = Path(temp_name)
+        isolated_artifact = _copy_artifact_into_workspace(
+            artifact_path=artifact_path,
+            target_repo_root=target_repo_root,
+            workspace=workspace,
+        )
+        _copy_target_file_into_workspace(
+            target_repo_root=target_repo_root,
+            workspace=workspace,
+            gated_target_relpath=gated_target_relpath,
+        )
+        yield ReviewerWorkspace(cwd=workspace, artifact_path=isolated_artifact, warning=warning)
+
+
+def _copy_artifact_into_workspace(
+    *,
+    artifact_path: Path,
+    target_repo_root: Path,
+    workspace: Path,
+) -> Path:
+    try:
+        relpath = artifact_path.resolve().relative_to(target_repo_root.resolve())
+    except ValueError:
+        relpath = Path("gated-artifacts") / artifact_path.name
+    target = workspace / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(artifact_path, target)
+    return target
+
+
+def _copy_target_file_into_workspace(
+    *,
+    target_repo_root: Path,
+    workspace: Path,
+    gated_target_relpath: str | None,
+) -> None:
+    if gated_target_relpath is None:
+        return
+    relpath = _safe_repo_relpath(gated_target_relpath)
+    if relpath is None:
+        return
+    source = target_repo_root / relpath
+    if not source.is_file():
+        return
+    target = workspace / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def _safe_repo_relpath(value: str) -> Path | None:
+    relpath = Path(value)
+    if relpath.is_absolute() or any(part == ".." for part in relpath.parts):
+        return None
+    return relpath
+
+
+def _safe_filename(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value.strip())
+    return safe or "unknown"
+
+
+def _with_warning(detail: str, warning: str | None) -> str:
+    if warning is None:
+        return detail
+    return f"{detail} ({warning})"
 
 
 def _resolved_cli(preflight: TandemPreflightResult, role: str, fallback: str) -> str:
@@ -519,8 +756,6 @@ def _discover_artifact(root: Path, before: dict[Path, tuple[int, int]]) -> Path 
             continue
         if before.get(path) != (stat.st_mtime_ns, stat.st_size):
             candidates.append(path)
-    if not candidates and len(all_paths) == 1:
-        candidates = all_paths
     if not candidates:
         return None
     return max(candidates, key=lambda item: item.stat().st_mtime_ns)
@@ -541,13 +776,14 @@ def _next_repair(
     resolved_cli: str,
     phase: str,
     detail: str,
+    stop_reason_code: str | None = None,
 ) -> TandemDriverResult | None:
     if repairs_used < repair_budget:
         return None
     return _stop(
         session_dir=session_dir,
         history=history,
-        reason_code="blocked",
+        reason_code=stop_reason_code or "blocked",
         role=role,
         resolved_cli=resolved_cli,
         phase=phase,

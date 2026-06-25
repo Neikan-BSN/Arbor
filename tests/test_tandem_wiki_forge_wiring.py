@@ -77,6 +77,12 @@ def test_adapter_returns_pass_for_byte_additive_fixproposal(tmp_path: Path) -> N
     assert outcome.proposal_id == "fp-123"
     assert outcome.reason_code == "gate-pass"
     assert "insert-only" in outcome.detail
+    assert outcome.target_relpath == "README.md"
+    assert outcome.patched_content is not None
+    assert "Added docs" in outcome.patched_content
+    assert outcome.content_hash == hashlib.sha256(
+        outcome.patched_content.encode("utf-8")
+    ).hexdigest()
     assert hashlib.sha256(WIKI_FORGE_VERIFIER.read_bytes()).hexdigest() == verifier_before
 
 
@@ -123,6 +129,9 @@ def test_adapter_maps_gate_record_reject_to_passed_false(
     assert outcome.produced
     assert not outcome.passed
     assert outcome.reason_code == "gate-reject"
+    assert outcome.target_relpath is None
+    assert outcome.patched_content is None
+    assert outcome.content_hash is None
     assert "not insert-only" in outcome.detail
 
 
@@ -171,6 +180,12 @@ def test_prompt_contract_shapes_match_arbor_parsers(tmp_path: Path) -> None:
     assert artifact_ref.proposal_id == "fp-contract"
 
     assert "schema_version: 1" in reviewer
+    assert "<untrusted_target_content" in producer
+    assert "<untrusted_proposal_and_target" in reviewer
+    assert "RUN_NONCE" in producer
+    assert "RUN_NONCE" in reviewer
+    assert re.search(r"data,\s+not\s+instructions", producer.lower())
+    assert re.search(r"data,\s+not\s+instructions", reviewer.lower())
     verdict = parse_reviewer_verdict(
         """
 schema_version: 1
