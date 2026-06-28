@@ -95,8 +95,23 @@ Dry-run (default — no GitHub mutation):
 ```bash
 WIKI_FORGE_ROOT=~/wiki-forge uv run arbor tandem run \
   "Author one additive docs fix for wiki-forge per producer_role_task.md" \
-  --target-repo ~/wiki-forge --producer-cli claude --reviewer-cli codex
+  --target-repo ~/wiki-forge --producer-cli claude --reviewer-cli codex \
+  --base-url http://127.0.0.1:4000/v1 \
+  --claude-permission-mode acceptEdits
 ```
+
+Two flags are REQUIRED when the producer is `claude` (both verified in the
+2026-06-28 Part C run):
+
+- `--base-url <local-marker>` — the paid-backend preflight fails closed on a
+  `claude` binding ("resolves to paid backend anthropic") unless an explicit
+  local endpoint marker is set. The value is a preflight marker only; it is NOT
+  passed to the `claude`/`codex` subprocess.
+- `--claude-permission-mode acceptEdits` — under the default permission mode the
+  headless `claude --print` producer cannot persist the proposal artifact, so
+  the run stops with `artifact-missing`. `acceptEdits` lets it write
+  `docs/maintainer-dogfood/proposals/<id>.json`. Producer-only; the reviewer
+  stays read-only. A `codex` producer writes by default and needs neither flag.
 
 To actually open the one draft PR (requires `gh`; never auto-merges), add
 `--open-pr`. The proving-run PR is a demonstration artifact, explicitly outside
@@ -105,7 +120,7 @@ the dogfood evidence chain.
 ## Findings note (fill in and commit)
 
 ```text
-Date (UTC): 2026-06-28   (Part A only; Parts B/C deferred — operator-run)
+Date (UTC): 2026-06-28   (Parts A, B, B', C — all operator-run)
 CLIs + versions: claude=2.1.195  codex=codex-cli 0.141.0  (subscription-auth; no provider API keys set)
 Part A — producer-contract feasibility:
   claude: first-try pass 9/10    after-one-repair 10/10
@@ -187,6 +202,32 @@ Conclusion: Part A (producer feasibility) PASSES. Part B + B' on the reviewer: t
   producer feasibility proven; reviewer layer proven; different-CLI independent review adds real,
   non-redundant coverage on subtle defects. Recurring across B and B': the claude reviewer
   output-format hardening item (todo 004).
+Part C — full `arbor tandem run` end-to-end (2026-06-28; producer=claude, reviewer=codex;
+  claude 2.1.195, codex-cli 0.142.3; no provider API keys set):
+  Ran the complete wired pipeline against wiki-forge (preflight -> produce -> additive gate ->
+  independent review -> PR). Surfaced TWO blockers, then proved the pipeline once both resolved:
+  Blocker 1 (preflight): a claude producer binding fails the paid-backend guard ("resolves to
+    paid backend anthropic") unless --base-url <local-marker> is set; the documented command was
+    missing it. The marker is preflight-only (never reaches the subprocess). FIX: pass
+    --base-url http://127.0.0.1:4000/v1.
+  Blocker 2 (produce): the load-bearing unknown CONFIRMED — claude --print under the default
+    permission mode cannot WRITE the artifact, so produce stops at reason 'artifact-missing'
+    (3 cycles: initial + 2 repairs). FIX (durable, landed in this branch): a new
+    --claude-permission-mode flag on `arbor tandem run`, threaded to the PRODUCER worker only
+    (reviewer stays read-only); --claude-permission-mode acceptEdits lets the producer persist.
+  PROOF (dry-run, both flags): "tandem ready: fp-de1c26dae0c5" in ONE cycle, no repairs.
+    Producer (claude) authored a real grounded additive fix — a new "## Exit Codes" README
+    section documenting the run/check/maintain exit codes implemented in src/wiki_forge/cli.py
+    (anchor_kind after_line; insert-only; +14/-0). Reviewer (codex) returned verdict: pass
+    (confidence 94) after VERIFYING grounding: re-derived the id, confirmed the anchor resolves
+    to one line, ran an additive splice check (orig 9366 -> patched 10114, insert_only=true), and
+    cross-checked cli.py:88,103-128,167 against the documented codes; cannot_count_goal: true.
+  DEMO PR (--open-pr): resumed from the ledger (no new CLI calls) and opened ONE draft PR —
+    Neikan-BSN/wiki-forge#46 (base main, head maintainer/fix-fp-de1c26dae0c5, +14/-0,
+    isDraft=true, not merged). Outside the dogfood evidence chain; operator holds merge authority.
+  NET: the full dual-CLI tandem works end-to-end and yields an accurate, grounded, gate-passing,
+    independently-reviewed, additive-only docs PR. Part C also produced a code change (the
+    --claude-permission-mode plumbing) plus the two documented claude-producer preconditions above.
 ```
 
 ## MVP pass criteria

@@ -90,6 +90,7 @@ def execute_tandem_run(
     reviewer_cli: str = "codex",
     repair_budget: int = 2,
     base_url: str | None = None,
+    claude_permission_mode: str | None = None,
     gate: Gate | None = None,
     gate_adapter_path: Path | None = None,
     dry_run: bool = True,
@@ -141,6 +142,7 @@ def execute_tandem_run(
         preflight_runner=cached_preflight,
         invocation_cap=invocation_cap,
         base_ref=base_branch,
+        claude_permission_mode=claude_permission_mode,
     )
 
     pr_result: DraftPrResult | None = None
@@ -212,6 +214,15 @@ def run_command(
         "--base-url",
         help="Optional local endpoint marker for paid-backend preflight checks.",
     ),
+    claude_permission_mode: str | None = typer.Option(
+        None,
+        "--claude-permission-mode",
+        help=(
+            "Permission mode for a claude-bound producer (e.g. acceptEdits) so "
+            "it can persist the proposal artifact in headless --print mode. "
+            "Applied to the producer role only."
+        ),
+    ),
     dry_run: bool = typer.Option(
         True,
         "--dry-run/--open-pr",
@@ -241,6 +252,7 @@ def run_command(
             reviewer_cli=reviewer_cli,
             repair_budget=repair_budget,
             base_url=base_url,
+            claude_permission_mode=claude_permission_mode,
             gate_adapter_path=gate_adapter,
             dry_run=dry_run,
             base_branch=base_branch,
