@@ -158,16 +158,35 @@ Part B — contrastive proof (seeded SemVer defect fp-08855c115a61; byte-additiv
     but degrades a correct `reject` into an opaque `blocked`. Hardening: constrain the
     claude reviewer envelope (strip preamble / output-schema) or let the spine tolerate a
     prose preamble before the envelope.
-Conclusion: The REVIEWER LAYER is proven valuable — an independent grounding-aware reviewer
-  reliably catches a byte-additive hallucination that the deterministic gate passes (6/6),
-  which the gate alone would ship. But the *specific* "different CLI > same-CLI self-review"
-  bet is NOT demonstrated by this fixture: same-CLI self-review (even a naive self-check)
-  also catches it (12/12), because both frontier CLIs read the README and see no release
-  regime. Net: Part A (producer feasibility) PASSES; Part B proves the reviewer catches
-  gate-passable hallucinations, but the different-CLI-*necessity* claim is UNPROVEN here and
-  needs a SUBTLER defect (one exhibiting same-CLI authorship blindness) to test. The C2-era
-  miss is most plausibly attributable to a weaker local model + non-grounding self-filter,
-  not to same-vs-different CLI. Also surfaced: a claude reviewer output-format hardening item.
+Part B' — different-CLI necessity on a SUBTLE-defect panel (the blatant SemVer fixture
+  could not isolate it). 3 gate-verified byte-additive defects, each contradicting one
+  specific README detail: s1 = `machine_entrypoints` reserved-field over-claim; s2 =
+  fabricated `--jobs` parallel flag; s3 = cadence drift (24h vs the real 7-day weekly).
+  {claude, codex} × {independent, naive self_review_light} × N=2:
+    s1 (over-claim): caught by all cells (both CLIs, both postures).
+    s3 (cadence drift): caught by all cells.
+    s2 (fabricated `--jobs` flag): independent — claude 2/2, codex 2/2 catch.
+      self_review_light — claude 2/2 catch, but codex 2/2 MISS (clean `pass`, empty findings).
+  → BET DEMONSTRATED (producer=codex / reviewer=claude on s2): codex's own naive self-review
+    passes the fabricated flag 2/2, while the different CLI (claude) rejects it 2/2. Clear
+    CLI-diversity split — claude flags `--jobs` even in naive self-review; codex does not.
+    codex DID catch s2 under the independent grounding-aware contract (2/2), so for codex the
+    verification *posture*, not just CLI identity, mattered. (Reviewers had repo read access;
+    catches that verified cited the real cli.py flag list — the codex naive miss did not verify.)
+Conclusion: Part A (producer feasibility) PASSES. Part B + B' on the reviewer: the independent
+  grounding-aware reviewer reliably catches byte-additive hallucinations the deterministic gate
+  passes (blatant SemVer 6/6; all three subtle defects caught by the independent reviewer). The
+  MVP's core bet — a *different* reviewing CLI catches what same-CLI self-review misses — is NOT
+  demonstrable on a blatant defect (Part B: every posture catches) but IS DEMONSTRATED on a subtle
+  one (Part B', s2): codex's naive self-review passes a fabricated `--jobs` flag 2/2 while a
+  different CLI (claude) rejects it 2/2, and the two CLIs show genuinely different catch profiles.
+  Caveat: the effect is intertwined with verification diligence — codex caught s2 under the
+  grounding-aware independent contract but missed it in naive self-review — so the value is
+  independent + grounding-aware review by a (different and/or more-diligent) CLI, not CLI identity
+  alone. The C2-era miss is consistent with a weaker local model + non-grounding self-filter. Net:
+  producer feasibility proven; reviewer layer proven; different-CLI independent review adds real,
+  non-redundant coverage on subtle defects. Recurring across B and B': the claude reviewer
+  output-format hardening item (todo 004).
 ```
 
 ## MVP pass criteria
