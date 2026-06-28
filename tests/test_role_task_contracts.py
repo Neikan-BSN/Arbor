@@ -134,6 +134,86 @@ def test_scalar_reviewer_verdict_payload_fails_closed() -> None:
     assert verdict.reason_code == "verdict-not-object"
 
 
+def test_reviewer_verdict_with_prose_preamble_is_extracted_not_blocked() -> None:
+    # U11-style: claude prepends a prose sentence before the YAML envelope.
+    payload = (
+        "The grounding check confirms the proposal is a hallucination: there is no\n"
+        "`wiki-forge release` command anywhere in the repo.\n"
+        "\n"
+        "schema_version: 1\n"
+        "proposal_id: fp-08855c115a61\n"
+        'verdict: "reject"\n'
+        "blocking_findings:\n"
+        '  - "Documents a release regime the repo does not have."\n'
+        "repair_hints: []\n"
+    )
+
+    verdict = parse_reviewer_verdict(payload)
+
+    assert verdict.verdict == "reject"
+    assert verdict.reason_code is None
+    assert verdict.blocking_findings
+
+
+def test_reviewer_verdict_in_fenced_yaml_block_is_extracted() -> None:
+    payload = (
+        "Here is my verdict:\n"
+        "```yaml\n"
+        "schema_version: 1\n"
+        "proposal_id: fp-1\n"
+        'verdict: "pass"\n'
+        "blocking_findings: []\n"
+        "repair_hints: []\n"
+        "```\n"
+    )
+
+    verdict = parse_reviewer_verdict(payload)
+
+    assert verdict.verdict == "pass"
+    assert verdict.reason_code is None
+
+
+def test_reviewer_repair_with_preamble_and_hints_parses() -> None:
+    payload = (
+        "Some narration about the review.\n"
+        "\n"
+        "schema_version: 1\n"
+        'verdict: "repair"\n'
+        "repair_hints:\n"
+        '  - "tighten the wording"\n'
+    )
+
+    verdict = parse_reviewer_verdict(payload)
+
+    assert verdict.verdict == "repair"
+    assert verdict.repair_hints == ["tighten the wording"]
+
+
+def test_two_distinct_verdict_envelopes_still_fail_closed() -> None:
+    payload = (
+        "schema_version: 1\n"
+        'verdict: "pass"\n'
+        "repair_hints: []\n"
+        "\n"
+        "schema_version: 1\n"
+        'verdict: "reject"\n'
+        "blocking_findings:\n"
+        '  - "actually no"\n'
+    )
+
+    verdict = parse_reviewer_verdict(payload)
+
+    assert verdict.verdict == "blocked"
+    assert verdict.reason_code == "verdict-contradictory"
+
+
+def test_preamble_before_malformed_envelope_still_fails_closed() -> None:
+    verdict = parse_reviewer_verdict("narration\n\nschema_version: 1\nverdict: [")
+
+    assert verdict.verdict == "blocked"
+    assert verdict.reason_code == "verdict-unparseable"
+
+
 def test_producer_artifact_missing_proposal_id_is_not_readable(tmp_path: Path) -> None:
     artifact = _write_producer_artifact(tmp_path / "fp-missing.json")
     payload = json.loads(artifact.read_text(encoding="utf-8"))

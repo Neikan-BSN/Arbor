@@ -1,5 +1,5 @@
 ---
-status: pending
+status: complete
 priority: p2
 issue_id: '004'
 tags: [tandem, contracts, reviewer, robustness]
@@ -71,8 +71,7 @@ more than one `verdict:` key, still return `blocked`.
   `schema_version != 1`, absent/unknown verdict, `pass` with `blocking_findings`,
   `repair` with no `repair_hints`, and two distinct verdict envelopes.
 - Regression tests cover: prose-preamble+envelope (→ intended verdict), fenced
-  ```yaml block (→ intended verdict), double-envelope (→ blocked).
-  ```
+  YAML block (→ intended verdict), double-envelope (→ blocked).
 - A U11-style claude reviewer transcript (prose then envelope) yields a clean
   `reject`/`repair` through the spine.
 
@@ -82,3 +81,12 @@ more than one `verdict:` key, still return `blocked`.
   codex 3/3; substantive verdict was a correct `reject` in every claude case). See
   `examples/wiki_forge_doc_maintainer/U11_RUNBOOK.md` Part B "Format-robustness
   finding".
+- 2026-06-28: RESOLVED (solution 1). Added `_extract_verdict_envelope` /
+  `_slice_from_schema_version` to `src/tandem/contracts.py` and routed the str branch
+  of `parse_reviewer_verdict` through them: prefer a fenced envelope, else slice from
+  the first `schema_version:` line; 2+ fenced envelopes fall through to the
+  duplicate-verdict guard. All fail-closed guarantees preserved. Added 5 regression
+  tests (prose-preamble, fenced block, double-envelope→blocked,
+  preamble+malformed→blocked, repair-with-preamble). Full suite 209 passed; ruff +
+  `mypy src/tandem` clean. Branch `fix/tandem-reviewer-verdict-envelope-extraction`.
+  Solution 2 (reviewer-side output constraint) remains an optional follow-on.

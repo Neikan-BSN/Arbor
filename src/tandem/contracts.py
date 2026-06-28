@@ -14,6 +14,8 @@ REVIEWER_VERDICT_SCHEMA_VERSION = 1
 ReviewerVerdictValue = Literal["pass", "repair", "reject", "blocked"]
 _ALLOWED_VERDICTS = {"pass", "repair", "reject", "blocked"}
 _VERDICT_LINE_RE = re.compile(r"(?m)^\s*verdict\s*:")
+_SCHEMA_VERSION_LINE_RE = re.compile(r"(?m)^\s*schema_version\s*:")
+_FENCED_BLOCK_RE = re.compile(r"```(?:ya?ml)?\s*(.*?)```", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,41 @@ def read_reviewer_verdict(path: str | Path) -> ReviewerVerdict:
     return parse_reviewer_verdict(text)
 
 
+def _slice_from_schema_version(text: str) -> str:
+    """Return ``text`` from its first ``schema_version:`` line onward (stripped).
+
+    Drops any prose preamble a reviewer emitted before the envelope.
+    """
+    match = _SCHEMA_VERSION_LINE_RE.search(text)
+    if match is None:
+        return text.strip()
+    return text[match.start() :].strip()
+
+
+def _extract_verdict_envelope(text: str) -> str:
+    """Extract the YAML verdict envelope from possibly-noisy reviewer output.
+
+    Tolerates a prose preamble before the envelope and/or a fenced ``` code
+    block, so a well-formed verdict a model wrapped in narration or fences is not
+    fail-closed to ``blocked`` purely on surrounding noise. Fail-closed semantics
+    are preserved: the returned region is still subject to the duplicate-verdict,
+    schema-version, and YAML-parse checks downstream. If more than one fenced
+    envelope is present the full text is returned so the duplicate-verdict guard
+    fails closed.
+    """
+    fenced = [
+        match.group(1).strip()
+        for match in _FENCED_BLOCK_RE.finditer(text)
+        if _SCHEMA_VERSION_LINE_RE.search(match.group(1))
+        or _VERDICT_LINE_RE.search(match.group(1))
+    ]
+    if len(fenced) == 1:
+        return _slice_from_schema_version(fenced[0])
+    if len(fenced) > 1:
+        return text
+    return _slice_from_schema_version(text)
+
+
 def parse_reviewer_verdict(payload: str | Mapping[str, Any] | None) -> ReviewerVerdict:
     """Parse a reviewer verdict envelope with fail-closed defaults."""
 
@@ -130,14 +167,15 @@ def parse_reviewer_verdict(payload: str | Mapping[str, Any] | None) -> ReviewerV
         )
 
     if isinstance(payload, str):
-        if len(_VERDICT_LINE_RE.findall(payload)) > 1:
+        envelope = _extract_verdict_envelope(payload)
+        if len(_VERDICT_LINE_RE.findall(envelope)) > 1:
             return _blocked(
                 schema_version=None,
                 detail="reviewer verdict contains multiple verdict keys",
                 reason_code="verdict-contradictory",
             )
         try:
-            loaded = yaml.safe_load(payload)
+            loaded = yaml.safe_load(envelope)
         except yaml.YAMLError as exc:
             return _blocked(
                 schema_version=None,
