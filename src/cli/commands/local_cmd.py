@@ -58,7 +58,7 @@ def _is_windows_mount(path: Path) -> bool:
     return text == "/mnt" or text.startswith("/mnt/")
 
 
-def _require_wsl_native_path(path: Path, *, label: str) -> Path:
+def require_wsl_native_path(path: Path, *, label: str) -> Path:
     if not _is_wsl():
         raise typer.BadParameter(
             "`arbor local` must be run inside WSL. Clone Arbor into the Linux "
@@ -71,6 +71,10 @@ def _require_wsl_native_path(path: Path, *, label: str) -> Path:
             "Use a WSL-native clone under /home instead."
         )
     return resolved
+
+
+def _require_wsl_native_path(path: Path, *, label: str) -> Path:
+    return require_wsl_native_path(path, label=label)
 
 
 def _default_skills_src() -> Path:
@@ -98,7 +102,7 @@ def _skill_dirs(skills_src: Path) -> list[Path]:
     return skill_dirs
 
 
-def _probe_cli(name: str) -> CliProbe:
+def probe_cli(name: str) -> CliProbe:
     path = shutil.which(name)
     if not path:
         return CliProbe(name=name, path=None, runnable=False, error="not found on PATH")
@@ -122,6 +126,10 @@ def _probe_cli(name: str) -> CliProbe:
             error=f"`{name} --version` exited {result.returncode}",
         )
     return CliProbe(name=name, path=path, runnable=True, version=output or None)
+
+
+def _probe_cli(name: str) -> CliProbe:
+    return probe_cli(name)
 
 
 def _select_agent(agent: str) -> str:
@@ -177,7 +185,7 @@ User request:
 """
 
 
-def _build_command(
+def build_command(
     *,
     agent: str,
     cwd: Path,
@@ -211,6 +219,23 @@ def _build_command(
             prompt,
         ]
     raise ValueError(f"unknown agent: {agent}")
+
+
+def _build_command(
+    *,
+    agent: str,
+    cwd: Path,
+    skills_src: Path,
+    task: str,
+    claude_permission_mode: str | None = None,
+) -> list[str]:
+    return build_command(
+        agent=agent,
+        cwd=cwd,
+        skills_src=skills_src,
+        task=task,
+        claude_permission_mode=claude_permission_mode,
+    )
 
 
 def _codex_user_skills_dir() -> Path:

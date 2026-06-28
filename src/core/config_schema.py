@@ -274,6 +274,40 @@ class UIConfig(BaseModel):
         return mode
 
 
+class RolesConfig(BaseModel):
+    """Producer/reviewer CLI role bindings for tandem runs.
+
+    Validation is intentionally string-only. Live CLI probing and auto
+    resolution belong to tandem preflight, where subprocess checks are allowed.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    producer: str = "claude"
+    reviewer: str = "codex"
+    repair_budget: int = 2
+
+    @field_validator("producer", "reviewer", mode="before")
+    @classmethod
+    def _normalize_cli_name(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("repair_budget")
+    @classmethod
+    def _repair_budget_non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("repair_budget must be non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def _require_independent_strings(self) -> "RolesConfig":
+        if self.producer == self.reviewer:
+            if self.producer == "auto":
+                raise ValueError("producer and reviewer cannot both be auto")
+            raise ValueError("producer and reviewer must be different CLI bindings")
+        return self
+
+
 # Shared flat-alias entries reused by both roles' PROXY maps. Listing each
 # legacy flat name once here is the explicit field registry (C3).
 _LLM_FLAT: dict[str, tuple[str, str]] = {
@@ -385,4 +419,3 @@ def redacted_snapshot(model: BaseModel) -> dict[str, Any]:
     excluded by ``model_dump``.
     """
     return _redact(model.model_dump(mode="json", exclude_none=False))
-

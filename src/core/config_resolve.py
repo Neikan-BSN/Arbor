@@ -95,13 +95,14 @@ def _warn_unknown_mapping_keys(
 def _warn_unknown_nested_blocks(mapping: dict[str, Any], *, location: str) -> None:
     from ..coordinator.config import BudgetPolicy, SearchConfig
     from ..coordinator.convergence import ConvergenceConfig
-    from .config_schema import ContextConfig, LLMConfig, TimeoutConfig, UIConfig
+    from .config_schema import ContextConfig, LLMConfig, RolesConfig, TimeoutConfig, UIConfig
 
     block_fields: dict[str, set[str]] = {
         "llm": set(LLMConfig.model_fields) | set(LLMConfig.FIELD_ALIASES),
         "timeout": set(TimeoutConfig.model_fields),
         "context": set(ContextConfig.model_fields),
         "ui": set(UIConfig.model_fields),
+        "roles": set(RolesConfig.model_fields),
         "budget_policy": set(BudgetPolicy.model_fields) | {
             "total_time_budget", "time_budget", "run_training_default", "run_training_max",
         },
@@ -123,7 +124,7 @@ def _warn_unknown_yaml_keys(raw: dict[str, Any], yaml_path: Path | None) -> None
     source = str(yaml_path) if yaml_path is not None else "config"
     coordinator_keys = _model_keys(CoordinatorConfig) | _LEGACY_ALIASES
     executor_keys = _model_keys(AgentConfig)
-    shared_top_keys = coordinator_keys | executor_keys | _DIRECTIVE_KEYS
+    shared_top_keys = coordinator_keys | executor_keys | _DIRECTIVE_KEYS | {"roles"}
     _warn_unknown_mapping_keys(raw, location=source, allowed=shared_top_keys)
     _warn_unknown_nested_blocks(raw, location=source)
 

@@ -73,6 +73,7 @@ packages = [
     "arbor.plugins",
     "arbor.report",
     "arbor.search_agent",
+    "arbor.tandem",
     "arbor.webui",
 ]
 
