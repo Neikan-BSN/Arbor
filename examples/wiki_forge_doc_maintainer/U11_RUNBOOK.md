@@ -105,19 +105,69 @@ the dogfood evidence chain.
 ## Findings note (fill in and commit)
 
 ```text
-Date (UTC):
-CLIs + versions: claude=...  codex=...
+Date (UTC): 2026-06-28   (Part A only; Parts B/C deferred — operator-run)
+CLIs + versions: claude=2.1.195  codex=codex-cli 0.141.0  (subscription-auth; no provider API keys set)
 Part A — producer-contract feasibility:
-  claude: first-try pass __/__   after-one-repair __/__
-  codex:  first-try pass __/__   after-one-repair __/__
-  Shim required? (y/n) + which:
-  Chosen --repair-budget + justification:
-Part B — contrastive proof (seeded SemVer defect):
-  producer CLI: ___   reviewer CLI: ___
-  different-CLI reviewer verdict: ___ (blocking finding: ___)
-  same-CLI self-review verdict: ___
-  Proof holds? (different catches AND same-CLI misses): (y/n)
-Conclusion: does the quality bet hold for the grounding-defect class?
+  claude: first-try pass 9/10    after-one-repair 10/10
+  codex:  first-try pass 10/10   after-one-repair 10/10
+  Aggregate: first-try 19/20 (95%); after-one-repair 20/20 (100%).
+  Anchor resolution: 19/19 parseable proposals anchored uniquely via after_line
+    — the anticipated hard failure (non-resolving anchor) did not occur once.
+  Only failure mode observed: one extra-field schema slip (claude emitted a
+    non-schema key; extra="forbid" rejection), repaired in a single cycle.
+  Shim required? NO — raw reliability is high enough for this gap class with no
+    constrained-output shim. Fallbacks if harder gaps regress the rate: codex
+    `exec --output-schema <FixProposal schema>`; a wiki-forge schema-constrained
+    draft helper; line-number+hash anchoring (anchoring was 100% here, so it is
+    not the bottleneck).
+  Chosen --repair-budget: 2 (retain KTD6 default). The lone first-try failure
+    recovered in exactly ONE repair, so budget=1 empirically sufficed; budget=2
+    keeps a one-repair margin for rarer double-faults and harder gap classes.
+  Method/scope: N=10 direct CLI invocations per CLI on one real gap (README.md —
+    missing `uv run wiki-forge maintain --help` in the Development debugging
+    block). Prompt = producer role contract + the gap + target content delimited
+    as untrusted input; proposal JSON captured from the final text output and
+    scored with the shipped gate logic (resolve_insertion_point +
+    evaluate_proposal == PASS). Measures the load-bearing unknown (anchor
+    resolves uniquely + additive gate passes); id-formula correctness and the
+    file-write+glob discovery path are out of Part A scope (the Part C producer
+    computes ids and writes the artifact via tools). Single gap with a
+    distinctive unique anchor — harder/ambiguous anchors could lower the rate.
+Part B — contrastive proof (seeded SemVer defect fp-08855c115a61; byte-additive, so the gate PASSES it):
+  Design: 3 review postures x {claude, codex} x N=3 = 18 reviews. Scored two ways —
+    substantive (the model's actual verdict: CATCH=reject|repair, MISS=pass) and
+    spine (parse_reviewer_verdict, the fail-closed parse the real spine runs).
+    Postures: independent (different-CLI, grounding-aware reviewer contract);
+    self_review_strict (same CLI, SAME grounding contract); self_review_light
+    (same CLI, naive self-check, no grounding mandate — the single-CLI counterfactual).
+  Substantive results — ALL 18 reviews CAUGHT it (0 misses), each citing the ungrounded
+    regime (no `wiki-forge release` command; fabricated stable/beta/nightly channels;
+    SemVer/changelog/signed-manifest unsupported; README is Phase-1 only):
+      independent:        claude 3/3 reject   codex 3/3 reject
+      self_review_strict: claude 3/3 reject   codex 3/3 reject
+      self_review_light:  claude 3/3 reject   codex 3/3 (2 repair, 1 reject)
+  different-CLI reviewer verdict: reject — catches it 6/6 (both CLIs as independent reviewer)
+  same-CLI self-review verdict: reject/repair — ALSO catches it 12/12 (strict AND naive)
+  Proof holds? (different catches AND same-CLI misses): NO. The "different-CLI catches"
+    half holds robustly; the "same-CLI self-review misses" half does NOT — same-CLI
+    self-review caught it every time. This fixture is too blatant to isolate different-CLI
+    *necessity*: any review that reads the README catches the fabricated release regime.
+  Format-robustness finding: claude tends to prepend a prose sentence before the YAML
+    envelope, so the fail-closed spine parser treats it as `blocked` (claude spine-clean
+    1/3 per cell; codex 3/3). This is SAFE (blocked is non-pass — the defect never merges)
+    but degrades a correct `reject` into an opaque `blocked`. Hardening: constrain the
+    claude reviewer envelope (strip preamble / output-schema) or let the spine tolerate a
+    prose preamble before the envelope.
+Conclusion: The REVIEWER LAYER is proven valuable — an independent grounding-aware reviewer
+  reliably catches a byte-additive hallucination that the deterministic gate passes (6/6),
+  which the gate alone would ship. But the *specific* "different CLI > same-CLI self-review"
+  bet is NOT demonstrated by this fixture: same-CLI self-review (even a naive self-check)
+  also catches it (12/12), because both frontier CLIs read the README and see no release
+  regime. Net: Part A (producer feasibility) PASSES; Part B proves the reviewer catches
+  gate-passable hallucinations, but the different-CLI-*necessity* claim is UNPROVEN here and
+  needs a SUBTLER defect (one exhibiting same-CLI authorship blindness) to test. The C2-era
+  miss is most plausibly attributable to a weaker local model + non-grounding self-filter,
+  not to same-vs-different CLI. Also surfaced: a claude reviewer output-format hardening item.
 ```
 
 ## MVP pass criteria
