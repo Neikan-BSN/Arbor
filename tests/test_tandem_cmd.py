@@ -246,3 +246,46 @@ def test_tandem_subpackage_imports_and_cli_help_lists_command() -> None:
 
     assert result.exit_code == 0
     assert "Run a producer/reviewer tandem workflow" in result.output
+
+
+def test_execute_tandem_run_forwards_claude_permission_mode_to_producer(tmp_path: Path) -> None:
+    target = tmp_path / "wiki-forge"
+    target.mkdir()
+    calls: list[dict[str, object]] = []
+
+    def worker(**kwargs) -> CliRunResult:
+        calls.append(kwargs)
+        if kwargs["cli"] == "claude":
+            _write_artifact(target)
+            return _result("claude")
+        return _result("codex", stdout=_pass_verdict())
+
+    result = tandem_cmd.execute_tandem_run(
+        task="produce docs proposal",
+        target_repo_root=target,
+        session_dir=tmp_path / "session",
+        skills_src=_skills(tmp_path),
+        claude_permission_mode="acceptEdits",
+        gate=lambda path, root: _gate_pass("fp-cmd"),
+        dry_run=True,
+        env={},
+        worker=worker,
+        preflight_runner=_preflight_ok,
+    )
+
+    assert result.driver.status == "ready"
+    producer_calls = [call for call in calls if call["cli"] == "claude"]
+    reviewer_calls = [call for call in calls if call["cli"] == "codex"]
+    assert producer_calls
+    assert all(call.get("claude_permission_mode") == "acceptEdits" for call in producer_calls)
+    # Reviewer stays read-only: it never receives an elevated permission mode.
+    assert reviewer_calls
+    assert all(call.get("claude_permission_mode") is None for call in reviewer_calls)
+
+
+def test_run_help_lists_claude_permission_mode_option() -> None:
+    # Render wide so rich does not truncate the long option name in the help box.
+    result = CliRunner().invoke(app, ["tandem", "run", "--help"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0
+    assert "--claude-permission-mode" in result.output

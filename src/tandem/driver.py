@@ -135,6 +135,7 @@ def run_tandem_driver(
     preflight_runner: PreflightRunner = run_tandem_preflight,
     invocation_cap: int = DEFAULT_INVOCATION_CAP,
     base_ref: str = "main",
+    claude_permission_mode: str | None = None,
 ) -> TandemDriverResult:
     """Run preflight -> produce -> gate -> review until ready or stopped."""
 
@@ -217,6 +218,10 @@ def run_tandem_driver(
                 skills_src=skills_src,
                 task=_producer_task(task, feedback_detail, prior_repair_hints),
                 env=worker_env,
+                # Producer-only so a claude producer can persist the artifact in
+                # headless --print mode; the reviewer stays read-only (no
+                # permission mode) to preserve filesystem isolation.
+                claude_permission_mode=claude_permission_mode,
             )
             invocations += max(1, producer_result.invocations)
             artifact_path = _discover_artifact(target_repo_root, before)

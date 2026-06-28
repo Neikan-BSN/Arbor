@@ -527,3 +527,41 @@ def test_invocation_cap_stops_after_gate_pass_before_reviewer(tmp_path: Path) ->
     assert result.status == "stopped"
     assert result.stop_record is not None
     assert result.stop_record.reason_code == "invocation-cap-exceeded"
+
+
+def test_claude_permission_mode_threads_to_producer_only(tmp_path: Path) -> None:
+    target = tmp_path / "repo"
+    target.mkdir()
+    calls: list[dict[str, object]] = []
+
+    def worker(**kwargs) -> CliRunResult:
+        calls.append(kwargs)
+        if kwargs["cli"] == "claude":
+            _write_artifact(target, "fp-0")
+            return _result("claude")
+        return _result("codex", stdout=_pass_verdict())
+
+    def gate(path: Path, root: Path) -> GateOutcome:
+        return _gate_pass("fp-0")
+
+    result = run_tandem_driver(
+        _config(),
+        session_dir=tmp_path / "session",
+        target_repo_root=target,
+        skills_src=_skills(tmp_path),
+        task="produce docs proposal",
+        gate=gate,
+        env={},
+        worker=worker,
+        preflight_runner=_preflight_ok,
+        claude_permission_mode="acceptEdits",
+    )
+
+    assert result.status == "ready"
+    producer_calls = [call for call in calls if call["cli"] == "claude"]
+    reviewer_calls = [call for call in calls if call["cli"] == "codex"]
+    assert producer_calls
+    assert all(call.get("claude_permission_mode") == "acceptEdits" for call in producer_calls)
+    # Reviewer stays read-only: it never receives an elevated permission mode.
+    assert reviewer_calls
+    assert all(call.get("claude_permission_mode") is None for call in reviewer_calls)
