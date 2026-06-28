@@ -1,7 +1,7 @@
 ---
 title: 'feat: Dual-CLI tandem role-orchestration MVP'
 type: feat
-status: active
+status: shipped
 date: 2026-06-22
 origin: docs/brainstorms/2026-06-22-dual-cli-tandem-roles-requirements.md
 ---
