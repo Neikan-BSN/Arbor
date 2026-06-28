@@ -105,19 +105,43 @@ the dogfood evidence chain.
 ## Findings note (fill in and commit)
 
 ```text
-Date (UTC):
-CLIs + versions: claude=...  codex=...
+Date (UTC): 2026-06-28   (Part A only; Parts B/C deferred — operator-run)
+CLIs + versions: claude=2.1.195  codex=codex-cli 0.141.0  (subscription-auth; no provider API keys set)
 Part A — producer-contract feasibility:
-  claude: first-try pass __/__   after-one-repair __/__
-  codex:  first-try pass __/__   after-one-repair __/__
-  Shim required? (y/n) + which:
-  Chosen --repair-budget + justification:
-Part B — contrastive proof (seeded SemVer defect):
+  claude: first-try pass 9/10    after-one-repair 10/10
+  codex:  first-try pass 10/10   after-one-repair 10/10
+  Aggregate: first-try 19/20 (95%); after-one-repair 20/20 (100%).
+  Anchor resolution: 19/19 parseable proposals anchored uniquely via after_line
+    — the anticipated hard failure (non-resolving anchor) did not occur once.
+  Only failure mode observed: one extra-field schema slip (claude emitted a
+    non-schema key; extra="forbid" rejection), repaired in a single cycle.
+  Shim required? NO — raw reliability is high enough for this gap class with no
+    constrained-output shim. Fallbacks if harder gaps regress the rate: codex
+    `exec --output-schema <FixProposal schema>`; a wiki-forge schema-constrained
+    draft helper; line-number+hash anchoring (anchoring was 100% here, so it is
+    not the bottleneck).
+  Chosen --repair-budget: 2 (retain KTD6 default). The lone first-try failure
+    recovered in exactly ONE repair, so budget=1 empirically sufficed; budget=2
+    keeps a one-repair margin for rarer double-faults and harder gap classes.
+  Method/scope: N=10 direct CLI invocations per CLI on one real gap (README.md —
+    missing `uv run wiki-forge maintain --help` in the Development debugging
+    block). Prompt = producer role contract + the gap + target content delimited
+    as untrusted input; proposal JSON captured from the final text output and
+    scored with the shipped gate logic (resolve_insertion_point +
+    evaluate_proposal == PASS). Measures the load-bearing unknown (anchor
+    resolves uniquely + additive gate passes); id-formula correctness and the
+    file-write+glob discovery path are out of Part A scope (the Part C producer
+    computes ids and writes the artifact via tools). Single gap with a
+    distinctive unique anchor — harder/ambiguous anchors could lower the rate.
+Part B — contrastive proof (seeded SemVer defect):  DEFERRED — operator-run, not run this session
   producer CLI: ___   reviewer CLI: ___
   different-CLI reviewer verdict: ___ (blocking finding: ___)
   same-CLI self-review verdict: ___
   Proof holds? (different catches AND same-CLI misses): (y/n)
-Conclusion: does the quality bet hold for the grounding-defect class?
+Conclusion: Part A PASSES — the producer contract is feasible (a real CLI emits a
+  gate-passable, uniquely-anchored FixProposal within --repair-budget, no shim).
+  The quality bet itself (different-CLI reviewer catches a grounding defect that a
+  same-CLI self-review misses) remains UNPROVEN pending Part B.
 ```
 
 ## MVP pass criteria
